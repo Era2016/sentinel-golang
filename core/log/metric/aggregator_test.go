@@ -1,10 +1,26 @@
+// Copyright 1999-2020 Alibaba Group Holding Ltd.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package metric
 
 import (
 	"testing"
+	"time"
 
 	"github.com/alibaba/sentinel-golang/core/base"
 	"github.com/alibaba/sentinel-golang/core/stat"
+	"github.com/alibaba/sentinel-golang/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -251,4 +267,44 @@ func Test_currentMetricItems(t *testing.T) {
 			}
 		})
 	}
+}
+
+type writeData struct {
+	ts    uint64
+	items []*base.MetricItem
+}
+
+type MockMetricLogWriter struct {
+	dataChan chan *writeData
+}
+
+func (sw *MockMetricLogWriter) Write(ts uint64, items []*base.MetricItem) error {
+	sw.dataChan <- &writeData{ts, items}
+	return nil
+}
+
+func Test_Aggregate(t *testing.T) {
+	t.Run("Test_aggregate", func(t *testing.T) {
+		util.SetClock(util.NewMockClock())
+		m := &MockMetricLogWriter{make(chan *writeData, 100)}
+		err := InitTask()
+		metricWriter = m
+		assert.True(t, err == nil)
+		node := stat.GetOrCreateResourceNode("test", base.ResTypeCommon)
+		node.AddCount(base.MetricEventPass, 2)
+		node.AddCount(base.MetricEventBlock, 3)
+
+		util.Sleep(time.Duration(1) * time.Second)
+		data := <-m.dataChan
+		assert.True(t, data.items[0].Resource == "test")
+		assert.True(t, data.items[0].BlockQps == 3)
+		assert.True(t, data.items[0].PassQps == 2)
+		node.AddCount(base.MetricEventBlock, 3)
+
+		util.Sleep(time.Duration(1) * time.Second)
+		data2 := <-m.dataChan
+		assert.True(t, data2.ts-data.ts < 1100)
+		assert.True(t, data2.items[0].BlockQps == 3)
+		assert.True(t, data2.items[0].Resource == "test")
+	})
 }

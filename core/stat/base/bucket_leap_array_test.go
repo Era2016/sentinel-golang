@@ -1,3 +1,17 @@
+// Copyright 1999-2020 Alibaba Group Holding Ltd.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package base
 
 import (
@@ -95,7 +109,7 @@ func coroutineTask(wg *sync.WaitGroup, slidingWindow *BucketLeapArray, now uint6
 
 func TestBucketLeapArray_resetBucketTo(t *testing.T) {
 	bla := NewBucketLeapArray(SampleCount, IntervalInMs)
-	idx := 6
+	idx := 19
 	oldBucketWrap := bla.data.array.get(idx)
 	oldBucket := oldBucketWrap.Value.Load()
 	if oldBucket == nil {
@@ -124,4 +138,47 @@ func TestBucketLeapArray_resetBucketTo(t *testing.T) {
 	if newRealBucket.Get(base.MetricEventBlock) != 0 {
 		t.Errorf("BucketLeapArray.ResetBucketTo() execute fail.")
 	}
+}
+
+func TestAddCount(t *testing.T) {
+	bla := NewBucketLeapArray(SampleCount, IntervalInMs)
+	bla.AddCount(base.MetricEventPass, 1)
+	passCount := bla.Count(base.MetricEventPass)
+	assert.True(t, passCount == 1)
+}
+
+func TestUpdateConcurrency(t *testing.T) {
+	bla := NewBucketLeapArray(SampleCount, IntervalInMs)
+	bla.UpdateConcurrency(1)
+	bla.UpdateConcurrency(3)
+	bla.UpdateConcurrency(2)
+	mc := bla.MaxConcurrency()
+	assert.True(t, mc == 3)
+}
+
+func TestMinRt(t *testing.T) {
+	t.Run("TestMinRt_Default", func(t *testing.T) {
+		bla := NewBucketLeapArray(SampleCount, IntervalInMs)
+		minRt := bla.MinRt()
+		assert.True(t, minRt == base.DefaultStatisticMaxRt)
+	})
+
+	t.Run("TestMinRt", func(t *testing.T) {
+		bla := NewBucketLeapArray(SampleCount, IntervalInMs)
+		bla.AddCount(base.MetricEventRt, 100)
+		minRt := bla.MinRt()
+		assert.True(t, minRt == 100)
+	})
+}
+
+func TestGetIntervalInSecond(t *testing.T) {
+	bla := NewBucketLeapArray(SampleCount, IntervalInMs)
+	second := bla.GetIntervalInSecond()
+	assert.True(t, util.Float64Equals(float64(IntervalInMs)/1000.0, second))
+}
+
+func TestDataType(t *testing.T) {
+	bla := NewBucketLeapArray(SampleCount, IntervalInMs)
+	dataType := bla.DataType()
+	assert.True(t, dataType == "MetricBucket")
 }

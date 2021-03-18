@@ -1,3 +1,17 @@
+// Copyright 1999-2020 Alibaba Group Holding Ltd.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package api
 
 import (
@@ -11,7 +25,7 @@ var entryOptsPool = sync.Pool{
 		return &EntryOptions{
 			resourceType: base.ResTypeCommon,
 			entryType:    base.Outbound,
-			acquireCount: 1,
+			batchCount:   1,
 			flag:         0,
 			slotChain:    nil,
 			args:         nil,
@@ -24,7 +38,7 @@ var entryOptsPool = sync.Pool{
 type EntryOptions struct {
 	resourceType base.ResourceType
 	entryType    base.TrafficType
-	acquireCount uint32
+	batchCount   uint32
 	flag         int32
 	slotChain    *base.SlotChain
 	args         []interface{}
@@ -34,7 +48,7 @@ type EntryOptions struct {
 func (o *EntryOptions) Reset() {
 	o.resourceType = base.ResTypeCommon
 	o.entryType = base.Outbound
-	o.acquireCount = 1
+	o.batchCount = 1
 	o.flag = 0
 	o.slotChain = nil
 	o.args = nil
@@ -57,10 +71,18 @@ func WithTrafficType(entryType base.TrafficType) EntryOption {
 	}
 }
 
+// DEPRECATED: use WithBatchCount instead.
 // WithAcquireCount sets the resource entry with the given batch count (by default 1).
 func WithAcquireCount(acquireCount uint32) EntryOption {
 	return func(opts *EntryOptions) {
-		opts.acquireCount = acquireCount
+		opts.batchCount = acquireCount
+	}
+}
+
+// WithBatchCount sets the resource entry with the given batch count (by default 1).
+func WithBatchCount(batchCount uint32) EntryOption {
+	return func(opts *EntryOptions) {
+		opts.batchCount = batchCount
 	}
 }
 
@@ -89,7 +111,7 @@ func WithSlotChain(chain *base.SlotChain) EntryOption {
 func WithAttachment(key interface{}, value interface{}) EntryOption {
 	return func(opts *EntryOptions) {
 		if opts.attachments == nil {
-			opts.attachments = make(map[interface{}]interface{})
+			opts.attachments = make(map[interface{}]interface{}, 8)
 		}
 		opts.attachments[key] = value
 	}
@@ -99,7 +121,7 @@ func WithAttachment(key interface{}, value interface{}) EntryOption {
 func WithAttachments(data map[interface{}]interface{}) EntryOption {
 	return func(opts *EntryOptions) {
 		if opts.attachments == nil {
-			opts.attachments = make(map[interface{}]interface{})
+			opts.attachments = make(map[interface{}]interface{}, len(data))
 		}
 		for key, value := range data {
 			opts.attachments[key] = value
@@ -110,12 +132,17 @@ func WithAttachments(data map[interface{}]interface{}) EntryOption {
 // Entry is the basic API of Sentinel.
 func Entry(resource string, opts ...EntryOption) (*base.SentinelEntry, *base.BlockError) {
 	options := entryOptsPool.Get().(*EntryOptions)
-	options.slotChain = globalSlotChain
+	defer func() {
+		options.Reset()
+		entryOptsPool.Put(options)
+	}()
 
 	for _, opt := range opts {
 		opt(options)
 	}
-
+	if options.slotChain == nil {
+		options.slotChain = GlobalSlotChain()
+	}
 	return entry(resource, options)
 }
 
@@ -129,7 +156,7 @@ func entry(resource string, options *EntryOptions) (*base.SentinelEntry, *base.B
 	// Get context from pool.
 	ctx := sc.GetPooledContext()
 	ctx.Resource = rw
-	ctx.Input.AcquireCount = options.acquireCount
+	ctx.Input.BatchCount = options.batchCount
 	ctx.Input.Flag = options.flag
 	if len(options.args) != 0 {
 		ctx.Input.Args = options.args
@@ -137,9 +164,8 @@ func entry(resource string, options *EntryOptions) (*base.SentinelEntry, *base.B
 	if len(options.attachments) != 0 {
 		ctx.Input.Attachments = options.attachments
 	}
-	options.Reset()
-	entryOptsPool.Put(options)
 	e := base.NewSentinelEntry(ctx, rw, sc)
+	ctx.SetEntry(e)
 	r := sc.Entry(ctx)
 	if r == nil {
 		// This indicates internal error in some slots, so just pass

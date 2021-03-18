@@ -1,7 +1,22 @@
+// Copyright 1999-2020 Alibaba Group Holding Ltd.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package base
 
 import (
 	"fmt"
+	"time"
 )
 
 type BlockType uint8
@@ -9,26 +24,40 @@ type BlockType uint8
 const (
 	BlockTypeUnknown BlockType = iota
 	BlockTypeFlow
+	BlockTypeIsolation
 	BlockTypeCircuitBreaking
 	BlockTypeSystemFlow
 	BlockTypeHotSpotParamFlow
 )
 
-func (t BlockType) String() string {
-	switch t {
-	case BlockTypeUnknown:
-		return "Unknown"
-	case BlockTypeFlow:
-		return "FlowControl"
-	case BlockTypeCircuitBreaking:
-		return "CircuitBreaking"
-	case BlockTypeSystemFlow:
-		return "System"
-	case BlockTypeHotSpotParamFlow:
-		return "HotSpotParamFlow"
-	default:
-		return fmt.Sprintf("%d", t)
+var (
+	blockTypeMap = map[BlockType]string{
+		BlockTypeUnknown:          "BlockTypeUnknown",
+		BlockTypeFlow:             "BlockTypeFlowControl",
+		BlockTypeIsolation:        "BlockTypeIsolation",
+		BlockTypeCircuitBreaking:  "BlockTypeCircuitBreaking",
+		BlockTypeSystemFlow:       "BlockTypeSystem",
+		BlockTypeHotSpotParamFlow: "BlockTypeHotSpotParamFlow",
 	}
+	blockTypeExisted = fmt.Errorf("block type existed")
+)
+
+// RegistryBlockType adds block type and corresponding description in order.
+func RegistryBlockType(blockType BlockType, desc string) error {
+	_, exist := blockTypeMap[blockType]
+	if exist {
+		return blockTypeExisted
+	}
+	blockTypeMap[blockType] = desc
+	return nil
+}
+
+func (t BlockType) String() string {
+	name, ok := blockTypeMap[t]
+	if ok {
+		return name
+	}
+	return fmt.Sprintf("%d", t)
 }
 
 type TokenResultStatus uint8
@@ -55,13 +84,13 @@ func (s TokenResultStatus) String() string {
 type TokenResult struct {
 	status TokenResultStatus
 
-	blockErr *BlockError
-	waitMs   uint64
+	blockErr    *BlockError
+	nanosToWait time.Duration
 }
 
 func (r *TokenResult) DeepCopyFrom(newResult *TokenResult) {
 	r.status = newResult.status
-	r.waitMs = newResult.waitMs
+	r.nanosToWait = newResult.nanosToWait
 	if r.blockErr == nil {
 		r.blockErr = &BlockError{
 			blockType:     newResult.blockErr.blockType,
@@ -70,49 +99,39 @@ func (r *TokenResult) DeepCopyFrom(newResult *TokenResult) {
 			snapshotValue: newResult.blockErr.snapshotValue,
 		}
 	} else {
+		// TODO: review the reusing logic
 		r.blockErr.blockType = newResult.blockErr.blockType
 		r.blockErr.blockMsg = newResult.blockErr.blockMsg
 		r.blockErr.rule = newResult.blockErr.rule
 		r.blockErr.snapshotValue = newResult.blockErr.snapshotValue
 	}
 }
-
 func (r *TokenResult) ResetToPass() {
 	r.status = ResultStatusPass
 	r.blockErr = nil
-	r.waitMs = 0
+	r.nanosToWait = 0
 }
 
-func (r *TokenResult) ResetToBlockedFrom(blockType BlockType, blockMsg string) {
+func (r *TokenResult) ResetToBlockedWith(opts ...BlockErrorOption) {
 	r.status = ResultStatusBlocked
 	if r.blockErr == nil {
-		r.blockErr = &BlockError{
-			blockType: blockType,
-			blockMsg:  blockMsg,
-		}
+		r.blockErr = NewBlockError(opts...)
 	} else {
-		r.blockErr.blockType = blockType
-		r.blockErr.blockMsg = blockMsg
+		r.blockErr.ResetBlockError(opts...)
 	}
-	r.waitMs = 0
+	r.nanosToWait = 0
 }
 
-func (r *TokenResult) ResetToBlockedWithCauseFrom(blockType BlockType, blockMsg string, rule SentinelRule, snapshot interface{}) {
-	r.status = ResultStatusBlocked
-	if r.blockErr == nil {
-		r.blockErr = &BlockError{
-			blockType:     blockType,
-			blockMsg:      blockMsg,
-			rule:          rule,
-			snapshotValue: snapshot,
-		}
-	} else {
-		r.blockErr.blockType = blockType
-		r.blockErr.blockMsg = blockMsg
-		r.blockErr.rule = rule
-		r.blockErr.snapshotValue = snapshot
-	}
-	r.waitMs = 0
+func (r *TokenResult) ResetToBlocked(blockType BlockType) {
+	r.ResetToBlockedWith(WithBlockType(blockType))
+}
+
+func (r *TokenResult) ResetToBlockedWithMessage(blockType BlockType, blockMsg string) {
+	r.ResetToBlockedWith(WithBlockType(blockType), WithBlockMsg(blockMsg))
+}
+
+func (r *TokenResult) ResetToBlockedWithCause(blockType BlockType, blockMsg string, rule SentinelRule, snapshot interface{}) {
+	r.ResetToBlockedWith(WithBlockType(blockType), WithBlockMsg(blockMsg), WithRule(rule), WithSnapshotValue(snapshot))
 }
 
 func (r *TokenResult) IsPass() bool {
@@ -131,8 +150,8 @@ func (r *TokenResult) BlockError() *BlockError {
 	return r.blockErr
 }
 
-func (r *TokenResult) WaitMs() uint64 {
-	return r.waitMs
+func (r *TokenResult) NanosToWait() time.Duration {
+	return r.nanosToWait
 }
 
 func (r *TokenResult) String() string {
@@ -142,45 +161,35 @@ func (r *TokenResult) String() string {
 	} else {
 		blockMsg = r.blockErr.Error()
 	}
-	return fmt.Sprintf("TokenResult{status=%+v, blockErr=%s, waitMs=%d}", r.status, blockMsg, r.waitMs)
+	return fmt.Sprintf("TokenResult{status=%s, blockErr=%s, nanosToWait=%d}", r.status.String(), blockMsg, r.nanosToWait)
 }
 
 func NewTokenResultPass() *TokenResult {
-	return &TokenResult{
-		status:   ResultStatusPass,
-		blockErr: nil,
-		waitMs:   0,
-	}
+	return NewTokenResult(ResultStatusPass)
 }
 
-func NewTokenResultBlocked(blockType BlockType, blockMsg string) *TokenResult {
-	return &TokenResult{
-		status: ResultStatusBlocked,
-		blockErr: &BlockError{
-			blockType: blockType,
-			blockMsg:  blockMsg,
-		},
-		waitMs: 0,
-	}
+func NewTokenResultBlocked(blockType BlockType) *TokenResult {
+	return NewTokenResult(ResultStatusBlocked, WithBlockType(blockType))
+}
+
+func NewTokenResultBlockedWithMessage(blockType BlockType, blockMsg string) *TokenResult {
+	return NewTokenResult(ResultStatusBlocked, WithBlockType(blockType), WithBlockMsg(blockMsg))
 }
 
 func NewTokenResultBlockedWithCause(blockType BlockType, blockMsg string, rule SentinelRule, snapshot interface{}) *TokenResult {
+	return NewTokenResult(ResultStatusBlocked, WithBlockType(blockType), WithBlockMsg(blockMsg), WithRule(rule), WithSnapshotValue(snapshot))
+}
+
+func NewTokenResult(status TokenResultStatus, blockErrOpts ...BlockErrorOption) *TokenResult {
 	return &TokenResult{
-		status: ResultStatusBlocked,
-		blockErr: &BlockError{
-			blockType:     blockType,
-			blockMsg:      blockMsg,
-			rule:          rule,
-			snapshotValue: snapshot,
-		},
-		waitMs: 0,
+		status:      status,
+		blockErr:    NewBlockError(blockErrOpts...),
+		nanosToWait: 0,
 	}
 }
 
-func NewTokenResultShouldWait(waitMs uint64) *TokenResult {
-	return &TokenResult{
-		status:   ResultStatusShouldWait,
-		blockErr: nil,
-		waitMs:   waitMs,
-	}
+func NewTokenResultShouldWait(waitNs time.Duration) *TokenResult {
+	result := NewTokenResult(ResultStatusShouldWait)
+	result.nanosToWait = waitNs
+	return result
 }

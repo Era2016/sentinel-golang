@@ -1,108 +1,51 @@
+// Copyright 1999-2020 Alibaba Group Holding Ltd.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package hotspot
 
 import (
-	"fmt"
-	"strconv"
-	"time"
-
 	"github.com/alibaba/sentinel-golang/core/base"
+	"github.com/alibaba/sentinel-golang/util"
 )
 
-type FreqPramsTrafficSlot struct {
+const (
+	RuleCheckSlotOrder = 4000
+)
+
+var (
+	DefaultSlot = &Slot{}
+)
+
+type Slot struct {
 }
 
-// matchArg matches the arg from args based on TrafficShapingController
-// return nil if match failed.
-func matchArg(tc TrafficShapingController, args []interface{}) interface{} {
-	if tc == nil {
-		return nil
-	}
-	idx := tc.BoundParamIndex()
-	if idx < 0 {
-		idx = len(args) + idx
-	}
-	if idx < 0 {
-		logger.Debugf("The param index in tc(%+v) is invalid for args(%+v)", tc, args)
-		return nil
-	}
-	if idx >= len(args) {
-		logger.Debugf("The argument doesn't exist for index(%d) of tc(%+v), args: %+v", idx, tc, args)
-		return nil
-	}
-	arg := args[idx]
-	if arg == nil {
-		return nil
-	}
-	switch arg.(type) {
-	case bool:
-	case float32:
-		n32 := arg.(float32)
-		n64, err := strconv.ParseFloat(fmt.Sprintf("%.5f", n32), 64)
-		if err != nil {
-			return nil
-		}
-		arg = n64
-	case float64:
-		n64 := arg.(float64)
-		n64, err := strconv.ParseFloat(fmt.Sprintf("%.5f", n64), 64)
-		if err != nil {
-			return nil
-		}
-		arg = n64
-	case int:
-		arg = arg.(int)
-	case int8:
-		n := arg.(int8)
-		arg = int(n)
-	case int16:
-		n := arg.(int16)
-		arg = int(n)
-	case int32:
-		n := arg.(int32)
-		arg = int(n)
-	case int64:
-		n := arg.(int64)
-		arg = int(n)
-	case uint:
-		n := arg.(uint)
-		arg = int(n)
-	case uint8:
-		n := arg.(uint8)
-		arg = int(n)
-	case uint16:
-		n := arg.(uint16)
-		arg = int(n)
-	case uint32:
-		n := arg.(uint32)
-		arg = int(n)
-	case uint64:
-		n := arg.(uint64)
-		arg = int(n)
-	case string:
-	default:
-		// unsupported param kind, direct return pass
-		return nil
-	}
-	return arg
+func (s *Slot) Order() uint32 {
+	return RuleCheckSlotOrder
 }
 
-func (s *FreqPramsTrafficSlot) Check(ctx *base.EntryContext) *base.TokenResult {
+func (s *Slot) Check(ctx *base.EntryContext) *base.TokenResult {
 	res := ctx.Resource.Name()
-	args := ctx.Input.Args
-	acquire := int64(ctx.Input.AcquireCount)
+	batch := int64(ctx.Input.BatchCount)
 
 	result := ctx.RuleCheckResult
 	tcs := getTrafficControllersFor(res)
-	if len(tcs) == 0 {
-		return result
-	}
-
 	for _, tc := range tcs {
-		arg := matchArg(tc, args)
+		arg := tc.ExtractArgs(ctx)
 		if arg == nil {
 			continue
 		}
-		r := canPassCheck(tc, arg, acquire)
+		r := canPassCheck(tc, arg, batch)
 		if r == nil {
 			continue
 		}
@@ -110,9 +53,9 @@ func (s *FreqPramsTrafficSlot) Check(ctx *base.EntryContext) *base.TokenResult {
 			return r
 		}
 		if r.Status() == base.ResultStatusShouldWait {
-			if waitMs := r.WaitMs(); waitMs > 0 {
+			if nanosToWait := r.NanosToWait(); nanosToWait > 0 {
 				// Handle waiting action.
-				time.Sleep(time.Duration(waitMs) * time.Millisecond)
+				util.Sleep(nanosToWait)
 			}
 			continue
 		}
@@ -120,10 +63,10 @@ func (s *FreqPramsTrafficSlot) Check(ctx *base.EntryContext) *base.TokenResult {
 	return result
 }
 
-func canPassCheck(tc TrafficShapingController, arg interface{}, acquire int64) *base.TokenResult {
-	return canPassLocalCheck(tc, arg, acquire)
+func canPassCheck(tc TrafficShapingController, arg interface{}, batch int64) *base.TokenResult {
+	return canPassLocalCheck(tc, arg, batch)
 }
 
-func canPassLocalCheck(tc TrafficShapingController, arg interface{}, acquire int64) *base.TokenResult {
-	return tc.PerformChecking(arg, acquire)
+func canPassLocalCheck(tc TrafficShapingController, arg interface{}, batch int64) *base.TokenResult {
+	return tc.PerformChecking(arg, batch)
 }

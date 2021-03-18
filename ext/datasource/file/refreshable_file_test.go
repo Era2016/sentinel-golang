@@ -1,3 +1,17 @@
+// Copyright 1999-2020 Alibaba Group Holding Ltd.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package file
 
 import (
@@ -9,6 +23,7 @@ import (
 	"time"
 
 	"github.com/alibaba/sentinel-golang/ext/datasource"
+	"github.com/alibaba/sentinel-golang/util"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	tmock "github.com/stretchr/testify/mock"
@@ -17,17 +32,17 @@ import (
 const (
 	TestSystemRules = `[
     {
-        "id": 0,
+        "id": "0",
         "metricType": 0,
         "adaptiveStrategy": 0
     },
     {
-        "id": 1,
+        "id": "1",
         "metricType": 0,
         "adaptiveStrategy": 0
     },
     {
-        "id": 2,
+        "id": "2",
         "metricType": 0,
         "adaptiveStrategy": 0
     }
@@ -125,7 +140,7 @@ func TestRefreshableFileDataSource_doReadAndUpdate(t *testing.T) {
 			closeChan:      make(chan struct{}),
 		}
 		mh1 := &datasource.MockPropertyHandler{}
-		hErr := errors.New("Handle error")
+		hErr := errors.New("handle error")
 		mh1.On("Handle", tmock.Anything).Return(hErr)
 		mh1.On("isPropertyConsistent", tmock.Anything).Return(false)
 		s.AddPropertyHandler(mh1)
@@ -150,7 +165,7 @@ func TestRefreshableFileDataSource_doReadAndUpdate(t *testing.T) {
 			closeChan:      make(chan struct{}),
 		}
 		mh1 := &datasource.MockPropertyHandler{}
-		hErr := errors.New("Handle error")
+		hErr := errors.New("handle error")
 		mh1.On("Handle", tmock.Anything).Return(hErr)
 		mh1.On("isPropertyConsistent", tmock.Anything).Return(false)
 		mh2 := &datasource.MockPropertyHandler{}
@@ -195,9 +210,9 @@ func TestRefreshableFileDataSource_Close(t *testing.T) {
 			t.Errorf("Fail to Initialize datasource, err: %+v", err)
 		}
 
-		time.Sleep(1 * time.Second)
+		util.Sleep(1 * time.Second)
 		s.Close()
-		time.Sleep(1 * time.Second)
+		util.Sleep(1 * time.Second)
 		e := s.watcher.Add(TestSystemRulesFile)
 		assert.True(t, e != nil && strings.Contains(e.Error(), "closed"))
 
@@ -234,11 +249,12 @@ func TestNewFileDataSource_ALL_For_SystemRule(t *testing.T) {
 
 		f.WriteString("\n" + TestSystemRules)
 		f.Sync()
-		time.Sleep(3 * time.Second)
+		util.Sleep(3 * time.Second)
 		mh1.AssertNumberOfCalls(t, "Handle", 2)
 
 		ds.Close()
-		time.Sleep(1 * time.Second)
+		f.Close()
+		util.Sleep(1 * time.Second)
 		e := ds.watcher.Add(TestSystemRulesFile)
 		assert.True(t, e != nil && strings.Contains(e.Error(), "closed"))
 
@@ -270,13 +286,13 @@ func TestNewFileDataSource_ALL_For_SystemRule(t *testing.T) {
 			t.Errorf("Fail to delete test file, err: %+v", err)
 		}
 
-		time.Sleep(3 * time.Second)
+		util.Sleep(3 * time.Second)
 		mh1.AssertNumberOfCalls(t, "Handle", 2)
 
 		ds.Close()
-		time.Sleep(1 * time.Second)
+		util.Sleep(1 * time.Second)
 		e := ds.watcher.Add(TestSystemRulesFile)
-		assert.True(t, e != nil && strings.Contains(e.Error(), "closed"))
+		assert.True(t, e != nil)
 	})
 
 }

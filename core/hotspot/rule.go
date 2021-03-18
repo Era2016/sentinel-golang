@@ -1,13 +1,28 @@
+// Copyright 1999-2020 Alibaba Group Holding Ltd.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package hotspot
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
 )
 
 // ControlBehavior indicates the traffic shaping behaviour.
-type ControlBehavior int8
+type ControlBehavior int32
 
 const (
 	Reject ControlBehavior = iota
@@ -26,7 +41,7 @@ func (t ControlBehavior) String() string {
 }
 
 // MetricType represents the target metric type.
-type MetricType int8
+type MetricType int32
 
 const (
 	// Concurrency represents concurrency count.
@@ -46,64 +61,53 @@ func (t MetricType) String() string {
 	}
 }
 
-// ParamKind represents the Param kind.
-type ParamKind int
-
-const (
-	KindInt ParamKind = iota
-	KindString
-	KindBool
-	KindFloat64
-	KindSum
-)
-
-func (t ParamKind) String() string {
-	switch t {
-	case KindInt:
-		return "KindInt"
-	case KindString:
-		return "KindString"
-	case KindBool:
-		return "KindBool"
-	case KindFloat64:
-		return "KindFloat64"
-	default:
-		return "Undefined"
-	}
-}
-
-// SpecificValue indicates the specific param, contain the supported param kind and concrete value.
-type SpecificValue struct {
-	ValKind ParamKind
-	ValStr  string
-}
-
-func (s *SpecificValue) String() string {
-	return fmt.Sprintf("SpecificValue:[ValKind: %+v, ValStr: %s]", s.ValKind, s.ValStr)
-}
-
-// Rule represents the frequency parameter flow control rule
+// Rule represents the hotspot(frequent) parameter flow control rule
 type Rule struct {
-	// Id is the unique id
-	Id string
+	// ID is the unique id
+	ID string `json:"id,omitempty"`
 	// Resource is the resource name
-	Resource        string
-	MetricType      MetricType
-	ControlBehavior ControlBehavior
+	Resource string `json:"resource"`
+	// MetricType indicates the metric type for checking logic.
+	// For Concurrency metric, hotspot module will check the each hot parameter's concurrency,
+	//		if concurrency exceeds the Threshold, reject the traffic directly.
+	// For QPS metric, hotspot module will check the each hot parameter's QPS,
+	//		the ControlBehavior decides the behavior of traffic shaping controller
+	MetricType MetricType `json:"metricType"`
+	// ControlBehavior indicates the traffic shaping behaviour.
+	// ControlBehavior only takes effect when MetricType is QPS
+	ControlBehavior ControlBehavior `json:"controlBehavior"`
 	// ParamIndex is the index in context arguments slice.
-	ParamIndex int
-	Threshold  float64
-	// MaxQueueingTimeMs is the max queueing time in Throttling ControlBehavior
-	MaxQueueingTimeMs int64
-	BurstCount        int64
-	DurationInSec     int64
-	ParamsMaxCapacity int64
-	SpecificItems     map[SpecificValue]int64
+	// if ParamIndex is great than or equals to zero, ParamIndex means the <ParamIndex>-th parameter
+	// if ParamIndex is the negative, ParamIndex means the reversed <ParamIndex>-th parameter
+	ParamIndex int `json:"paramIndex"`
+	// ParamKey is the key in EntryContext.Input.Attachments map.
+	// ParamKey can be used as a supplement to ParamIndex to facilitate rules to quickly obtain parameter from a large number of parameters
+	// ParamKey is mutually exclusive with ParamIndex, ParamKey has the higher priority than ParamIndex
+	ParamKey string `json:"paramKey"`
+	// Threshold is the threshold to trigger rejection
+	Threshold int64 `json:"threshold"`
+	// MaxQueueingTimeMs only takes effect when ControlBehavior is Throttling and MetricType is QPS
+	MaxQueueingTimeMs int64 `json:"maxQueueingTimeMs"`
+	// BurstCount is the silent count
+	// BurstCount only takes effect when ControlBehavior is Reject and MetricType is QPS
+	BurstCount int64 `json:"burstCount"`
+	// DurationInSec is the time interval in statistic
+	// DurationInSec only takes effect when MetricType is QPS
+	DurationInSec int64 `json:"durationInSec"`
+	// ParamsMaxCapacity is the max capacity of cache statistic
+	ParamsMaxCapacity int64 `json:"paramsMaxCapacity"`
+	// SpecificItems indicates the special threshold for specific value
+	SpecificItems map[interface{}]int64 `json:"specificItems"`
 }
 
 func (r *Rule) String() string {
-	return fmt.Sprintf("{Id:%s, Resource:%s, MetricType:%+v, ControlBehavior:%+v, ParamIndex:%d, Threshold:%f, MaxQueueingTimeMs:%d, BurstCount:%d, DurationInSec:%d, ParamsMaxCapacity:%d, SpecificItems:%+v}",
-		r.Id, r.Resource, r.MetricType, r.ControlBehavior, r.ParamIndex, r.Threshold, r.MaxQueueingTimeMs, r.BurstCount, r.DurationInSec, r.ParamsMaxCapacity, r.SpecificItems)
+	b, err := json.Marshal(r)
+	if err != nil {
+		// Return the fallback string
+		return fmt.Sprintf("{Id:%s, Resource:%s, MetricType:%+v, ControlBehavior:%+v, ParamIndex:%d, ParamKey:%s, Threshold:%d, MaxQueueingTimeMs:%d, BurstCount:%d, DurationInSec:%d, ParamsMaxCapacity:%d, SpecificItems:%+v}",
+			r.ID, r.Resource, r.MetricType, r.ControlBehavior, r.ParamIndex, r.ParamKey, r.Threshold, r.MaxQueueingTimeMs, r.BurstCount, r.DurationInSec, r.ParamsMaxCapacity, r.SpecificItems)
+	}
+	return string(b)
 }
 func (r *Rule) ResourceName() string {
 	return r.Resource
@@ -111,12 +115,12 @@ func (r *Rule) ResourceName() string {
 
 // IsStatReusable checks whether current rule is "statistically" equal to the given rule.
 func (r *Rule) IsStatReusable(newRule *Rule) bool {
-	return r.Resource == newRule.Resource && r.ControlBehavior == newRule.ControlBehavior && r.ParamsMaxCapacity == newRule.ParamsMaxCapacity && r.DurationInSec == newRule.DurationInSec
+	return r.Resource == newRule.Resource && r.ControlBehavior == newRule.ControlBehavior && r.ParamsMaxCapacity == newRule.ParamsMaxCapacity && r.DurationInSec == newRule.DurationInSec && r.MetricType == newRule.MetricType
 }
 
-// IsEqualsTo checks whether current rule is consistent with the given rule.
+// Equals checks whether current rule is consistent with the given rule.
 func (r *Rule) Equals(newRule *Rule) bool {
-	baseCheck := r.Resource == newRule.Resource && r.MetricType == newRule.MetricType && r.ControlBehavior == newRule.ControlBehavior && r.ParamsMaxCapacity == newRule.ParamsMaxCapacity && r.ParamIndex == newRule.ParamIndex && r.Threshold == newRule.Threshold && r.DurationInSec == newRule.DurationInSec && reflect.DeepEqual(r.SpecificItems, newRule.SpecificItems)
+	baseCheck := r.Resource == newRule.Resource && r.MetricType == newRule.MetricType && r.ControlBehavior == newRule.ControlBehavior && r.ParamsMaxCapacity == newRule.ParamsMaxCapacity && r.ParamIndex == newRule.ParamIndex && r.ParamKey == newRule.ParamKey && r.Threshold == newRule.Threshold && r.DurationInSec == newRule.DurationInSec && reflect.DeepEqual(r.SpecificItems, newRule.SpecificItems)
 	if !baseCheck {
 		return false
 	}
@@ -127,50 +131,4 @@ func (r *Rule) Equals(newRule *Rule) bool {
 	} else {
 		return false
 	}
-}
-
-// parseSpecificItems parses the SpecificValue as real value.
-func parseSpecificItems(source map[SpecificValue]int64) map[interface{}]int64 {
-	ret := make(map[interface{}]int64)
-	if len(source) == 0 {
-		return ret
-	}
-	for k, v := range source {
-		switch k.ValKind {
-		case KindInt:
-			realVal, err := strconv.Atoi(k.ValStr)
-			if err != nil {
-				logger.Errorf("Failed to parse value for int specific item. paramKind: %+v, value: %s, err: %+v", k.ValKind, k.ValStr, err)
-				continue
-			}
-			ret[realVal] = v
-
-		case KindString:
-			ret[k.ValStr] = v
-
-		case KindBool:
-			realVal, err := strconv.ParseBool(k.ValStr)
-			if err != nil {
-				logger.Errorf("Failed to parse value for bool specific item. value: %s, err: %+v", k.ValStr, err)
-				continue
-			}
-			ret[realVal] = v
-
-		case KindFloat64:
-			realVal, err := strconv.ParseFloat(k.ValStr, 64)
-			if err != nil {
-				logger.Errorf("Failed to parse value for float specific item. value: %s, err: %+v", k.ValStr, err)
-				continue
-			}
-			realVal, err = strconv.ParseFloat(fmt.Sprintf("%.5f", realVal), 64)
-			if err != nil {
-				logger.Errorf("Failed to parse value for float specific item. value: %s, err: %+v", k.ValStr, err)
-				continue
-			}
-			ret[realVal] = v
-		default:
-			logger.Errorf("Unsupported kind for specific item: %d", k.ValKind)
-		}
-	}
-	return ret
 }
